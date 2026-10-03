@@ -1,0 +1,213 @@
+<!doctype html>
+<!-- ContraryLive v0.1.0 | Copyright (c) 2026 Bryce Lovell
+     SPDX-License-Identifier: PolyForm-Strict-1.0.0 | See LICENSE. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ContraryLive: Light and Dark on the news</title>
+<meta name="description" content="A continuous live-news conversation between Light and Dark, two opposing AI personalities. Free browser-local AI with a small rolling conversation.">
+<style>
+:root{--tx:#eef0f6;--mut:#9aa0b4;--lt:#ffcf6b;--ltb:#4a3a14;--dk:#a99bff;--dkb:#221c47}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;display:flex;flex-direction:column;color:var(--tx);font:15px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:linear-gradient(90deg,#2a2112 0%,#14151f 48%,#0c0a1c 100%)}
+header{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 14px;background:rgba(10,10,18,.55);border-bottom:1px solid #2a2d3d}
+h1{margin:0 auto 0 0;font:600 18px Georgia,serif}
+h1 b{color:var(--lt)}h1 i{color:var(--dk)}
+select,button{background:#1d2030;color:var(--tx);border:1px solid #38405a;border-radius:8px;padding:6px 10px;font:inherit;max-width:260px}
+button:focus-visible,select:focus-visible{outline:2px solid var(--lt);outline-offset:2px}
+#go{background:var(--lt);color:#241a00;border:0;font-weight:600}
+#status{padding:5px 14px;font-size:12px;color:var(--mut);background:rgba(10,10,18,.4);min-height:26px}
+#chat{flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:10px;width:100%;max-width:780px;margin:0 auto;padding:14px}
+.m,.topic{max-height:320px;transition:opacity .6s,max-height .6s,padding .6s,margin .6s}
+.m{max-width:78%;padding:9px 13px;border-radius:18px;animation:in .35s ease}
+.m small{display:block;margin-bottom:2px;font-size:12px;font-weight:600}
+.L{align-self:flex-start;background:var(--ltb);border-bottom-left-radius:4px}
+.D{align-self:flex-end;background:var(--dkb);border-bottom-right-radius:4px}
+.L small{color:var(--lt)}.D small{color:var(--dk)}
+.topic{align-self:center;max-width:92%;text-align:center;font-size:12.5px;color:var(--mut);background:rgba(255,255,255,.06);border-radius:12px;padding:7px 12px}
+.topic a{color:inherit}
+.fade{opacity:0;max-height:0;padding-top:0;padding-bottom:0;margin:-5px 0;overflow:hidden}
+#typing{height:22px;padding:0 18px 8px;font-size:12.5px;color:var(--mut);font-style:italic;max-width:780px;width:100%;margin:0 auto}
+@keyframes in{from{opacity:0;transform:translateY(8px)}}
+@media (prefers-reduced-motion:reduce){.m{animation:none}}
+#bar{display:block;width:100%;height:5px;accent-color:var(--lt)}#bar[hidden]{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>ContraryLive: <b>Light</b> and <i>Dark</i> on the news</h1>
+  <select id="prov" aria-label="Engine">
+    <option value="local">Local AI in your browser (free, private)</option>
+    <option value="cloud">No download (free web AI, experimental)</option>
+  </select>
+  <select id="model" aria-label="Model"></select>
+  <select id="pace" aria-label="Pace">
+    <option value="7000">Relaxed</option>
+    <option value="3500" selected>Normal</option>
+    <option value="1200">Fast</option>
+  </select>
+  <button id="go">Start</button>
+  <button id="pause" disabled>Pause</button>
+</header>
+<div id="status">Press Start. Conversation history is not saved: messages stay in memory and fade away.</div>
+<progress id="bar" max="1" value="0" hidden></progress>
+<main id="chat" aria-live="off"></main>
+<div id="typing"></div>
+
+<script type="module">
+const $=id=>document.getElementById(id), sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const MAXV=8;                       // max bubbles visible; older ones fade out
+let webllm=null, engine=null, libErr='';
+const tip='Opened from a file? Run "python -m http.server 8000" in this folder and open http://localhost:8000/index.html instead.';
+if(location.protocol==='file:')$('status').textContent=tip;
+let csp='';
+document.addEventListener('securitypolicyviolation',e=>{if(/connect/.test(e.violatedDirective))csp=e.violatedDirective+' blocked '+e.blockedURI});
+if(window.top!==window.self)$('status').textContent='This page is running inside another page (a preview). Previews block outside connections, so download the file and open it from your own computer.';
+const libP=(async()=>{const errs=[];
+for(const u of ['https://esm.run/@mlc-ai/web-llm','https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm/+esm','https://esm.sh/@mlc-ai/web-llm','https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@0.2.79/+esm']){
+  try{const m=await import(u);if(m.prebuiltAppConfig){webllm=m;break}errs.push(new URL(u).host+': no model list')}
+  catch(e){errs.push(new URL(u).host+': '+(e.message||e))}}
+
+/* ---------- model list (read from WebLLM itself so IDs are always valid) ---------- */
+const pref=['Llama-3.2-3B-Instruct-q4f16_1-MLC','Qwen2.5-3B-Instruct-q4f16_1-MLC','Phi-3.5-mini-instruct-q4f16_1-MLC','Qwen2.5-1.5B-Instruct-q4f16_1-MLC'];
+if(webllm){
+  const ml=webllm.prebuiltAppConfig.model_list.filter(m=>/instruct|-it-/i.test(m.model_id)&&m.vram_required_MB&&m.vram_required_MB<5000)
+    .sort((a,b)=>a.vram_required_MB-b.vram_required_MB);
+  $('model').innerHTML=ml.map(m=>`<option value="${m.model_id}">${m.model_id.replace('-MLC','')} (~${(m.vram_required_MB/1000).toFixed(1)} GB)</option>`).join('');
+  const d=pref.find(p=>ml.some(m=>m.model_id===p)); if(d)$('model').value=d;
+}else{libErr=errs.join(' | ');$('status').textContent='Local AI library failed to load: '+libErr+'. '+(location.protocol==='file:'?tip:'Try the no-download engine.')}
+})();
+$('prov').onchange=()=>$('model').style.display=$('prov').value==='local'?'':'none';
+
+/* ---------- live news ---------- */
+const SRC=[
+ {c:'world',n:'BBC',u:'https://feeds.bbci.co.uk/news/world/rss.xml'},
+ {c:'world',n:'Al Jazeera',u:'https://www.aljazeera.com/xml/rss/all.xml'},
+ {c:'world',n:'The Guardian',u:'https://www.theguardian.com/world/rss'},
+ {c:'world',n:'NPR',u:'https://feeds.npr.org/1004/rss.xml'},
+ {c:'gaming',n:'IGN',u:'https://feeds.ign.com/ign/games-all'},
+ {c:'gaming',n:'PC Gamer',u:'https://www.pcgamer.com/rss/'},
+ {c:'gaming',n:'GameSpot',u:'https://www.gamespot.com/feeds/news/'},
+ {c:'gaming',n:'Eurogamer',u:'https://www.eurogamer.net/feed'},
+ {c:'weather',n:'NASA EONET',j:'eonet'},
+ {c:'weather',n:'USGS',j:'quake'}];
+const PX=[u=>u,u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),u=>'https://corsproxy.io/?url='+encodeURIComponent(u)];
+async function get(u,json){
+  for(const p of PX){try{const ac=new AbortController(),t=setTimeout(()=>ac.abort(),9000);
+    const r=await fetch(p(u),{signal:ac.signal,cache:'no-store'});clearTimeout(t);
+    if(r.ok)return json?await r.json():await r.text()}catch(e){}}
+  throw 0}
+const clean=s=>s.replace(/<[^>]+>/g,' ').replace(/&[a-z#0-9]+;/gi,' ').replace(/\s+/g,' ').trim();
+function rss(x){const d=new DOMParser().parseFromString(x,'text/xml');
+  return [...d.querySelectorAll('item,entry')].slice(0,20).map(i=>{
+    const g=s=>i.querySelector(s)?.textContent||'',l=i.querySelector('link');
+    return{t:clean(g('title')),d:clean(g('description')||g('summary')).slice(0,280),
+      l:l?.getAttribute('href')||l?.textContent||'',ts:Date.parse(g('pubDate')||g('updated')||g('published'))||0}})}
+const Q={world:[],gaming:[],weather:[]}, seen=new Set(); let rot=0;
+const key=t=>t.toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,60);
+async function pull(s){try{
+  let it;
+  if(s.j==='eonet'){const j=await get('https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=20',1);
+    it=j.events.map(e=>({t:e.title+' ('+(e.categories[0]?.title||'natural event')+')',d:'',l:e.link,ts:Date.parse(e.geometry.at(-1).date)||0}))}
+  else if(s.j==='quake'){const j=await get('https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/4.5_day.geojson',1);
+    it=j.features.map(f=>({t:'Earthquake: '+f.properties.title,d:'',l:f.properties.url,ts:f.properties.time}))}
+  else it=rss(await get(s.u));
+  for(const i of it){const k=key(i.t);if(!k||seen.has(k)||Q[s.c].some(q=>q.k===k))continue;i.k=k;i.s=s.n;Q[s.c].push(i)}
+  Q[s.c].sort((a,b)=>b.ts-a.ts);Q[s.c].length=Math.min(Q[s.c].length,40);
+}catch(e){}}
+async function poller(){
+  await Promise.all(SRC.map(pull));
+  setInterval(()=>{for(let i=0;i<3;i++)pull(SRC[rot++%SRC.length])},60000); // 3 sources/min, every source refreshed every ~3-4 min
+}
+function next(){
+  const w={world:.5,gaming:.25,weather:.25},av=Object.keys(Q).filter(c=>Q[c].length);if(!av.length)return null;
+  let r=Math.random()*av.reduce((a,c)=>a+w[c],0),c=av[0];for(const x of av){r-=w[x];if(r<=0){c=x;break}}
+  const s=Q[c].shift();s.c=c;seen.add(s.k);if(seen.size>800)seen.delete(seen.values().next().value);return s}
+
+/* ---------- the two bots ---------- */
+const P={
+ L:{name:'Light',sys:"You are Light, a warm, quick-witted optimist chatting with your friend Dark about today's news. You always find the real silver lining, opportunity or reason for hope, citing specifics from the story. You never deny or joke about suffering: for tragedies, acknowledge it in a few words, then point to resilience, help or lessons. You are trying to talk Dark round."},
+ D:{name:'Dark',sys:"You are Dark, a dry, sardonic pessimist chatting with your friend Light about today's news. You always spot the catch, risk, hypocrisy or likely downside, citing specifics. You are cynical about systems, companies and outcomes, never cruel to victims or ordinary people. You push back on Light's optimism with concrete counterpoints."}};
+async function llm(sys,usr,temp){
+  const body={messages:[{role:'system',content:sys},{role:'user',content:usr}],temperature:temp,max_tokens:90};
+  if(engine){const r=await engine.chat.completions.create({...body,presence_penalty:.6});return r.choices[0].message.content}
+  const r=await fetch('https://text.pollinations.ai/openai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'openai',...body})});
+  if(!r.ok)throw new Error('web AI returned '+r.status);return(await r.json()).choices[0].message.content}
+const strip=t=>t.replace(/^\s*(light|dark)\s*:\s*/i,'').replace(/^["\u201c]|["\u201d]$/g,'').trim();
+const words=t=>new Set(t.toLowerCase().match(/[a-z']{3,}/g)||[]);
+function sim(a,b){const A=words(a),B=words(b);let i=0;A.forEach(w=>B.has(w)&&i++);return i/((A.size+B.size-i)||1)}
+const hist=[];                       // last 6 messages only, in memory only
+async function turn(who,st,n,last){
+  const o=who==='L'?'D':'L';
+  const tr=hist.filter(m=>m.s===st.k).slice(-4).map(m=>P[m.w].name+': '+m.t).join('\n');
+  const goal=n===0?'Open the conversation with your take on this story.':last?'Land a short, witty closing line on this story.':'Reply directly to '+P[o].name+"'s last message and add a NEW point.";
+  const usr=`Story (${st.s}): ${st.t}\n${st.d}\n\nConversation so far:\n${tr||'(none)'}\n\n${goal} Write 1-2 short sentences (under 40 words), casual chat style, as ${P[who].name}. No name prefix, no hashtags, do not repeat earlier points.`;
+  let t='';
+  for(let a=0;a<2;a++){t=strip(await llm(P[who].sys,usr+(a?' Say something clearly different from what was said before.':''),.85+a*.1));
+    if(t&&!hist.some(m=>sim(m.t,t)>.5))break}
+  return t}
+
+/* ---------- screen ---------- */
+function add(el){const c=$('chat');c.append(el);
+  const live=[...c.children].filter(x=>!x.classList.contains('fade'));
+  while(live.length>MAXV){const o=live.shift();o.classList.add('fade');setTimeout(()=>o.remove(),700)}}
+function post(w,t){const e=document.createElement('div'),s=document.createElement('small');
+  e.className='m '+w;s.textContent=P[w].name;e.append(s,document.createTextNode(t));add(e)}
+function topic(s){const e=document.createElement('div');e.className='topic';
+  const ic={world:'World',gaming:'Gaming',weather:'Weather'}[s.c];
+  e.append(document.createTextNode(ic+' news from '+s.s+': '));
+  if(/^https?:/.test(s.l)){const a=document.createElement('a');a.href=s.l;a.target='_blank';a.rel='noopener';a.textContent=s.t;e.append(a)}
+  else e.append(document.createTextNode(s.t));add(e)}
+const typing=w=>$('typing').textContent=w?P[w].name+' is typing...':'';
+
+/* ---------- endless loop ---------- */
+let run=false,paused=false;
+async function loop(){
+  let st=null,n=0,len=0,first='L';
+  while(run){
+    if(paused){await sleep(400);continue}
+    if(!st||n>=len){
+      st=next();
+      if(!st){$('status').textContent='Scanning for fresh headlines...';await sleep(5000);continue}
+      first=first==='L'?'D':'L';n=0;len=5+Math.floor(Math.random()*4);topic(st);
+      $('status').textContent=`Live. Waiting in queue: ${Q.world.length} world, ${Q.gaming.length} gaming, ${Q.weather.length} weather.`}
+    const who=n%2?(first==='L'?'D':'L'):first;
+    typing(who);let t;
+    try{t=await turn(who,st,n,n===len-1)}
+    catch(e){typing(null);$('status').textContent='AI error: '+e.message+'. Retrying...';await sleep(5000);continue}
+    typing(null);if(!run)break;
+    post(who,t);hist.push({w:who,t,s:st.k});if(hist.length>6)hist.shift();n++;
+    await sleep(+$('pace').value+t.split(' ').length*90)}}
+
+async function diagnose(e){
+  if(csp||window.top!==window.self)return 'This page is sandboxed and cannot make outside connections ('+(csp||'embedded in a viewer')+'). Download the file and open it from your own computer, ideally through a local server.';
+  const m=webllm.prebuiltAppConfig.model_list.find(x=>x.model_id===$('model').value)||{},bad=[];
+  for(const u of [m.model&&m.model.replace(/\/$/,'')+'/resolve/main/mlc-chat-config.json',m.model_lib])
+    if(u)try{const r=await fetch(u,{method:u.endsWith('.json')?'GET':'HEAD'});if(!r.ok)bad.push(new URL(u).host+' (HTTP '+r.status+')')}
+    catch(_){bad.push(new URL(u).host+' (unreachable)')}
+  return (e.message||e)+(bad.length?'. Failing hosts: '+bad.join(', ')+'. Check VPN, ad blocker or network filter, or try another model or the no-download engine.'
+    :'. The config and runtime hosts respond, so a weight-file download likely failed partway; try a smaller model.')}
+$('go').onclick=async()=>{
+  if(run)return;$('go').disabled=true;$('go').textContent='Loading...';
+  try{
+    const np=poller();
+    if($('prov').value==='local'){
+      await libP;
+      if(!webllm)throw new Error('Local AI library failed to load: '+libErr);
+      if(!navigator.gpu)throw new Error('This browser has no WebGPU. Use desktop Chrome or Edge, or pick the no-download engine.');
+      let last='Starting...',tick=Date.now();const t0=tick;
+      const iv=setInterval(()=>{const idle=Math.round((Date.now()-tick)/1000);
+        $('status').textContent=last+' ['+Math.round((Date.now()-t0)/1000)+'s elapsed'+(idle>60?'; no update for '+idle+'s, the download may have stalled. Reload and press Start again: finished files stay cached':'')+']'},1000);
+      try{engine=await webllm.CreateMLCEngine($('model').value,{initProgressCallback:r=>{tick=Date.now();last=Math.round((r.progress||0)*100)+'%: '+r.text;$('bar').hidden=false;$('bar').value=r.progress||0}})}
+      catch(e){throw new Error(await diagnose(e))}
+      finally{clearInterval(iv);$('bar').hidden=true}
+    }else engine=null;
+    $('status').textContent='Fetching the latest headlines...';await np;
+    run=true;$('go').textContent='Running';$('pause').disabled=false;loop();
+  }catch(e){$('status').textContent='Problem: '+(e.message||e);$('go').disabled=false;$('go').textContent='Start'}};
+$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'Resume':'Pause'};
+</script>
+</body>
+</html>
